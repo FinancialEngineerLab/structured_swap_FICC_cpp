@@ -1,7 +1,7 @@
-from operator import index
 import QuantLib as ql
 import numpy as np
 import pandas as pd
+
 
 
 # settlementDate = ql.Date(31, ql.December, 2021)
@@ -11,8 +11,9 @@ calendar = ql.SouthKorea()
 
 
 class StructuredSwap:
-    def __init__(self, maturityDate) -> None:
+    def __init__(self, maturityDate, indexes) -> None:
         self.maturityDate = maturityDate
+        self.indexes = indexes
 
 
 def period_to_years(p: ql.Period):
@@ -23,7 +24,8 @@ def period_to_years(p: ql.Period):
 
 
 def index_curve():
-    zeroRates = [('1M',0.00489990232726306),
+    zeroRates = [('0D',0.00489990232726306),
+                ('1M',0.00489990232726306),
                 ('3M',0.00729336504901711),
                 ('6M',0.0072183976819218),
                 ('9M',0.00756841947715215),
@@ -124,6 +126,7 @@ def vol_matrix_file():
     atmVol.atmOptionTenors = atmOptionTenors
     atmVol.atmSwapTenors = atmSwapTenors
     atmVol.m = m
+    atmVol.df = df
     
     x = [ period_to_years(tenor) for tenor in atmSwapTenors ]
     y = [ period_to_years(tenor) for tenor in atmOptionTenors ]
@@ -134,6 +137,30 @@ def vol_matrix_file():
     atmVol.interpolation = ql.BilinearInterpolation(x, y, m.tolist())
 
     return atmVol
+
+
+def swaption_helper(exerciseTenor, swapTenor, vol):
+    fixedLegTenor = ql.Period(3, ql.Months)
+    dayCounter = ql.Actual365Fixed()
+    curve = index_curve()
+    index = ql.Libor('libor', ql.Period(3, ql.Months), 1, ql.KRWCurrency(), ql.SouthKorea(), dayCounter, curve)
+    volatilityType = ql.Normal
+    
+    helper = ql.SwaptionHelper(exerciseTenor, 
+                                swapTenor,
+                                ql.QuoteHandle(ql.SimpleQuote(vol)),
+                                index,
+                                fixedLegTenor,
+                                dayCounter,
+                                dayCounter,
+                                curve,
+                                ql.BlackCalibrationHelper.RelativePriceError,
+                                ql.nullDouble(),
+                                1.0,
+                                volatilityType)
+    helper.vol = vol
+
+    return helper
 
 
 def swaptions_interpolate(volMatrix, x, exerciseDate, y, endDate, curve):
@@ -159,6 +186,7 @@ def swaptions_interpolate(volMatrix, x, exerciseDate, y, endDate, curve):
                                 ql.nullDouble(),
                                 1.0,
                                 volatilityType)
+                                
     helper.vol = vol
 
     return helper
@@ -194,6 +222,53 @@ def swaptions_diagonal(swap: StructuredSwap):
     return instruments
 
 
+def swaptions_diagonal_and_index(swap: StructuredSwap):
+    dayCounter = ql.Actual365Fixed()
+    volMatrix = vol_matrix_file()
+    maturity_t = dayCounter.yearFraction(settlementDate, swap.maturityDate)
+    curve = index_curve()
+
+    swap_t = min(int(maturity_t), 10)
+    option_t = maturity_t - swap_t
+
+    instruments = []
+    print(option_t, maturity_t)
+    for i in range(0, 10):
+        roop_option_t = option_t + i
+        roop_swap_t = swap_t - i
+
+        if roop_option_t <= 10 and swap_t - i > 0:
+            pair = (roop_option_t, roop_swap_t)
+            exerciseDate = ql.NullCalendar().advance(settlementDate, ql.Period(int(roop_option_t*365), ql.Days) )
+            swapMaturityDate = calendar.advance(exerciseDate, ql.Period(roop_swap_t, ql.Years))
+            
+            helper = swaptions_interpolate(volMatrix, pair[0], exerciseDate, pair[1], swapMaturityDate, curve)
+            # print(pair, ql.Actual365Fixed().yearFraction(settlementDate, exerciseDate), ql.Actual365Fixed().yearFraction(settlementDate, swapMaturityDate), exerciseDate.ISO(), swapMaturityDate.ISO(), helper.vol)
+            print(pair[0], pair[1], helper.vol)
+            # print(pair, helper.swaptionExpiryDate(), helper.vol)
+            
+            instruments.append(helper)
+    
+    print(ql.Settings.instance().evaluationDate)
+
+    for swap_maturity in swap.indexes:
+        for exerciseTenor in volMatrix.atmOptionTenors:
+            # print(type(exerciseTenor), type(swap_maturity))
+            vol = volMatrix.df[str(swap_maturity).lower()][str(exerciseTenor).lower()]
+            helper = swaption_helper(exerciseTenor, swap_maturity, vol)
+
+            # print(exerciseTenor, swap_maturity, helper.swaptionExpiryDate(), helper.vol)
+            # print(exerciseTenor, swap_maturity, helper.vol)
+            print(period_to_years(exerciseTenor), period_to_years(swap_maturity), helper.vol)
+            
+            instruments.append(helper)
+    
+
+    print(len(instruments))
+    return instruments
+
+
+
 def swaptions_fullset():
     atmVol = vol_matrix_file()
     curve = index_curve()
@@ -226,6 +301,7 @@ def swaptions_fullset():
     return helpers
 
     # normal to 
+
 
 class ModelCalibrator:
     def __init__(self, endCriteria):        
@@ -265,11 +341,13 @@ def main():
     calibrator = ModelCalibrator(endCriteria)
     
     # SWP16060016014
-    maturityDate = ql.DateParser_parseISO('2030-06-17')
-    swap = StructuredSwap(maturityDate)
+    maturityDate = ql.DateParser_parseISO('2031-01-17') # 2031-02-17
+    indexes = [ql.Period('2y'), ql.Period('10y')]
+    swap = StructuredSwap(maturityDate, indexes)
 
-    for h in swaptions_fullset():
+    # for h in swaptions_fullset():
     # for h in swaptions_diagonal(swap):
+    for h in swaptions_diagonal_and_index(swap):
         calibrator.AddCalibrationHelper(h)
 
     # create model and pricing engine, calibrate model and print calibrated parameters
@@ -284,5 +362,8 @@ def main():
 
 
 main()
+
 # v = vol_matrix_file()
+# print(v.df['2y']['3m'])
 # print(v.interpolation(2,5))
+
