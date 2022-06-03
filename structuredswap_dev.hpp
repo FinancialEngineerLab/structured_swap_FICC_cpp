@@ -482,27 +482,7 @@ namespace QuantLib
 			const TimeGrid& timeGrid)
 			: IndexMC(swapIndex, model, timeGrid)
 		{
-			Date evaluationDate = Settings::instance().evaluationDate();
-			Date effectiveDate = swapIndex->fixingCalendar().advance(
-				evaluationDate, Period(swapIndex->fixingDays(), TimeUnit::Days), swapIndex->fixedLegConvention());
-			auto swap = swapIndex->underlyingSwap(effectiveDate);
-			auto dates = swap->fixedSchedule().dates();
-			auto dc = swapIndex->dayCounter();
-
-			auto fixedLeg = swap->fixedLeg();
-
-			for (Size i = 0; i < fixedLeg.size(); i++)
-			{
-				this->coupon_frac_arr_.push_back(dc.yearFraction(evaluationDate, fixedLeg[i]->date()));
-			}
-
-			//// 처음꺼 제외
-			//for (Size i = 1; i < dates.size(); i++)
-			//{
-			//	this->coupon_frac_arr_.push_back(dc.yearFraction(evaluationDate, dates[i]));
-			//}
 		}
-
 
 		//Real calc_index(Real t, const Array& factors, const boost::shared_ptr<AffineModel>& model) const
 		//{
@@ -517,20 +497,16 @@ namespace QuantLib
 
 		boost::shared_ptr<AdditionalCalc> get_additionalCalc() const
 		{
-			//
-			boost::shared_ptr<AdditionalCalc> cms_calc;
+			boost::shared_ptr<SwapIndex> swapIndex
+				= boost::dynamic_pointer_cast<SwapIndex>(this->index_);
+
+			boost::shared_ptr<AdditionalCalc> cms_calc(
+				new SwapRateCalc(this->model_->name(), this->model_, swapIndex->tenor(), swapIndex->fixedLegTenor()));
+
 			return cms_calc;
 		}
 
-
-		Real calc_payoff(const ScenarioPath& scenPath) const
-		{
-			return scenPath.current_underlyings[this->location_];
-		}
-
-
 	protected:
-		// boost::shared_ptr<SwapIndex> swapIndex_;
 		std::vector<Real> coupon_frac_arr_;
 	};
 
@@ -561,13 +537,13 @@ namespace QuantLib
 
 		boost::shared_ptr<AdditionalCalc> get_additionalCalc() const
 		{
-			boost::shared_ptr<AdditionalCalc> ibor_calc;
+			boost::shared_ptr<IborIndex> iborIndex
+				= boost::dynamic_pointer_cast<IborIndex>(this->index_);
+
+			boost::shared_ptr<AdditionalCalc> ibor_calc(
+				new SpotRateCalc(this->model_->name(), this->model_, iborIndex->tenor(), Simple));
+
 			return ibor_calc;
-		}
-
-		Real calc_payoff(const ScenarioPath& scenPath) const
-		{
-
 		}
 
 	protected:
@@ -633,7 +609,7 @@ namespace QuantLib
 		Real calculate_path(const ScenarioPath& scenPath) const
 		{
 			Real rate = scenPath.current_underlyings[this->location_];
-			
+
 			return this->nominal_ * (this->gearing_ * rate + this->spread_) * this->accrualPeriod_;
 		}
 
@@ -746,22 +722,21 @@ namespace QuantLib
 			: indexes_(indexes), pay_discount_model_(pay_discount_model), rec_discount_model_(rec_discount_model),
 			timeGrid_(timeGrid), samples_(samples), seed_(seed), nCalibrationSamples_(nCalibrationSamples)
 		{
-			// index 에 사용될 모델 3개
+			// name으로 구분됨.
+			// index 에 사용될 모델 2개
 			// index에 해당하는 rate(ibor or swap) 3개
+			// 
 			// disocunt 에 사용될 모델 2개
 			// discount addcalc 2개
 			// 총 10개...! 중
-			
+
 			// 자기꺼 찾아서 underlying에다가 넣고 위치 설정
 
 			for (Size i = 0; i < indexes.size(); i++)
 				indexes[i]->setLocation(i);
-
-
-
 		}
 
-
+		/*
 		Real compound(const ScenarioPath& scenPath, Date from, Date to, DayCounter dc) const
 		{
 			Date evaluationDate = Settings::instance().evaluationDate();
@@ -791,14 +766,17 @@ namespace QuantLib
 
 		}
 
-		Real discount(const ScenarioPath& scenPath, Date from, Date to, DayCounter dc) const
-		{
-			return 1.0 / compound(multiPath, from, to, dc);
+		*/
 
+		Real discount(const ScenarioPath& scenPath, Size discount_loc, Date excerciseDate, Date next_excerciseDate, const DayCounter& dc)
+		{
+			Real df;
+			// interpolation 해야함. -> rate ? discount ?
+			// 전 discount랑 rate랑 조합함
+			return df;
 		}
 
-		// fixes or floating or ... ql 에서 지원되는 coupon들 여기서 계산
-		Real legVanillaAmt(const Leg& leg, const ScenarioPath& scenPath, Date excerciseDate, Date next_excerciseDate, Size& couponCalculatedCount) const
+		Real legAmt(const Leg& leg, const ScenarioPath& scenPath, const boost::shared_ptr<DiscountFactorCalc>& disccountCalc, Date excerciseDate, Date next_excerciseDate, Size& couponCalculatedCount, const DayCounter& dc) const
 		{
 			couponCalculatedCount = 0;
 
@@ -820,196 +798,7 @@ namespace QuantLib
 					break;
 			}
 
-			//for (Size j = startLegCount; j < legNum; j++)
-			for (Size j = startLegCount; j < legNum; j++)
-			{
-				boost::shared_ptr<FloatingRateCoupon> fltCpn
-					= boost::dynamic_pointer_cast<FloatingRateCoupon>(leg[j]);
-				Date paymentDate = fltCpn->date();
-
-				// excerciseDate 와 next_excerciseDate 사이에 있는거만 넣음
-				// paymentDate in (excerciseDate, next_excerciseDate]
-				if (paymentDate <= excerciseDate || next_excerciseDate < paymentDate)
-					continue;
-
-				couponCalculatedCount += 1;
-				DayCounter dc = fltCpn->dayCounter();
-
-				Real ex_t = dc.yearFraction(evaluationDate, excerciseDate);
-				Real payment_t = dc.yearFraction(evaluationDate, paymentDate);
-				Real reset_t = dc.yearFraction(evaluationDate, fltCpn->fixingDate());
-
-				Real df = this->discount(scenPath, excerciseDate, paymentDate, dc);
-				// Real rate = this->rate(multiPath, ex_t);
-
-				if (reset_t < 0)
-				{
-					amount += fltCpn->amount() * df;
-				}
-				else
-				{
-
-
-					//Real coupon_discounted = coupon * this->discount(multiPath, excerciseDate, paymentDate, dc); // 할인함
-					Real coupon_discounted = coupon * df;
-					amount += coupon_discounted;
-				}
-			}
-
-			return amount;
-		}
-
-		// excerciseDate 시점의 continuation value
-		// 최종적으로 이거는 StructuredLeg class 만들어서 거기로 보내야함.
-
-		// structured 중간에 vanilla?s
-		Real legCpnMcAmt(const Leg& leg, const ScenarioPath& scenPath, Date excerciseDate, Date next_excerciseDate, Size& couponCalculatedCount) const
-		{
-			couponCalculatedCount = 0;
-
-			Date evaluationDate = Settings::instance().evaluationDate();
-
-			std::vector<Size> ex_t_pos;
-			std::vector<Real> amounts;
-			std::vector<Real> rates;
-
-			Size legNum = leg.size();
-			Real amount = 0.0;
-			Size startLegCount = 0;
-
-			for (Size i = 0; i < legNum; i++)
-			{
-				startLegCount = i;
-				Date d = leg[i]->date();
-				if (evaluationDate < d) // 당일꺼는 안넣음
-					break;
-			}
-
-			for (Size j = startLegCount; j < legNum; j++)
-			{
-				boost::shared_ptr<CouponMC> cpn = boost::dynamic_pointer_cast<CouponMC>(leg[j]);
-
-				Date paymentDate = cpn->date();
-
-				// excerciseDate 와 next_excerciseDate 사이에 있는거만 넣음
-				if (paymentDate <= excerciseDate || next_excerciseDate < paymentDate)
-					continue;
-
-				couponCalculatedCount += 1;
-				DayCounter dc = cpn->dayCounter();
-
-				Real ex_t = dc.yearFraction(evaluationDate, excerciseDate);
-				Real payment_t = dc.yearFraction(evaluationDate, paymentDate);
-
-				// Real rate = this->rate(scenPath, ex_t);
-				Real df = this->discount(scenPath, excerciseDate, paymentDate, dc);
-
-				Real notional = cpn->notional();
-				Real accrualPeriod = cpn->accrual();
-				// 여기서 cms range를 계산한다고 쳐.
-
-				Real coupon = notional * accrualPeriod * cpn->calculate_path(scenPath);
-				Real coupon_discounted = coupon * this->discount(scenPath, excerciseDate, paymentDate, dc); // 할인함
-
-				amount += coupon_discounted;
-			}
-
-			return amount;
-
-		}
-
-
-		//Real _cpnAmt_mc(const boost::shared_ptr<CouponMC>& cpn, const ScenarioPath& scenPath) const
-		//{
-		//	// Real notional = cpn->notional();
-		//	// Real accrualPeriod = cpn->accrual();
-		//	// 여기서 cms range를 계산한다고 쳐.
-
-		//	// Real coupon = notional * accrualPeriod * cpn->calculate_path(scenPath);
-
-		//	return cpn->calculate_path(scenPath);
-		//}
-
-		//Real _cpnAmt_flt(const boost::shared_ptr<FloatingRateCouponMC>& cpn, const ScenarioPath& scenPath) const
-		//{
-		//	Real amount = 0.0;
-		//	DayCounter dc = cpn->dayCounter();
-
-		//	// Real ex_t = dc.yearFraction(evaluationDate, excerciseDate);
-		//	// Real payment_t = dc.yearFraction(evaluationDate, paymentDate);
-		//	Real reset_t = dc.yearFraction(evaluationDate, cpn->fixingDate());
-
-		//	// Real rate = this->rate(multiPath, ex_t);
-
-		//	if (reset_t < 0)
-		//	{
-		//		amount = cpn->amount();
-		//	}
-		//	else
-		//	{
-		//		Real notional = cpn->notional();
-		//		Real accrualPeriod = cpn->accrual();
-		//		// 여기서 cms range를 계산한다고 쳐.
-
-		//		Real amount = notional * accrualPeriod * cpn->calculate_path(scenPath);
-
-		//	}
-
-		//	return amount;
-
-		//}
-		//Real cpnAmt(const boost::shared_ptr<CashFlow>& cf, const ScenarioPath& scenPath) const
-		//{
-		//	Real v = 0.0;
-
-		//	auto cpnMc = boost::dynamic_pointer_cast<CouponMC>(cf);
-
-		//	cpnMc->calculate_path();
-
-		//	if (boost::dynamic_pointer_cast<CouponMC>(cf))
-		//	{
-		//		v = _cpnAmt_mc(boost::dynamic_pointer_cast<CouponMC>(cf), scenPath);
-		//	}
-		//	else if (boost::dynamic_pointer_cast<FloatingRateCouponMC>(cf))
-		//	{
-		//		v = _cpnAmt_flt(boost::dynamic_pointer_cast<FloatingRateCouponMC>(cf), scenPath);
-
-		//	}
-		//	else if (boost::dynamic_pointer_cast<FixedRateCoupon>(cf))
-		//	{
-
-		//	}
-		//	else
-		//	{
-		//		QL_FAIL("unknown cashflow");
-		//	}
-
-		//	return v;
-
-		//}
-
-		Real legAmt(const Leg& leg, const ScenarioPath& scenPath, Date excerciseDate, Date next_excerciseDate, Size& couponCalculatedCount, const DayCounter& dc) const
-		{
-			couponCalculatedCount = 0;
-
-			Date evaluationDate = Settings::instance().evaluationDate();
-
-			std::vector<Size> ex_t_pos;
-			std::vector<Real> amounts;
-			std::vector<Real> rates;
-
-			Size legNum = leg.size();
-			Real amount = 0.0;
-			Size startLegCount = 0;
-
-			for (Size i = 0; i < legNum; i++)
-			{
-				startLegCount = i;
-				Date d = leg[i]->date();
-				if (evaluationDate < d) // 당일꺼는 안넣음
-					break;
-			}
-
+			disccountCalc->lo
 			for (Size j = startLegCount; j < legNum; j++)
 			{
 				auto cpn = boost::dynamic_pointer_cast<CouponMC>(leg[j]);
@@ -1151,9 +940,12 @@ namespace QuantLib
 			boost::shared_ptr<DiscountFactorCalc> rec_discountFactor(new DiscountFactorCalc("rec_discount", this->rec_discount_model_));
 			calcs.push_back(rec_discountFactor);
 
-			EvolverFactory::scenario_generator2(models, calcs, this->corr_, this->timeGrid_, rsgWrapper, filename, processMomentMatch);
+			auto scenario = EvolverFactory::scenario_generator2(models, calcs, this->corr_, this->timeGrid_, rsgWrapper, filename, processMomentMatch);
+			scenario->generate();
 			ScenarioResultReader scenarioResult(filename);
 
+
+			// rec pay?
 			for (Size j = 0; j < n; ++j)
 			{
 				ScenarioPath scenPath(scenarioResult.multiPath(j), timeGrid_);
@@ -1161,8 +953,8 @@ namespace QuantLib
 
 				prices[j] = 0.0;
 
-				Real float_amt = this->legFltAmt(floatingLeg, scenPath, evaluationDate, maturityDate, couponCalculatedCount);
-				Real structured_amt = this->legStructuredAmt(structuredLeg, scenPath, evaluationDate, maturityDate, couponCalculatedCount);
+				Real pay_amt = this->legAmt(payLeg, scenPath, pay_discountFactor, evaluationDate, maturityDate, couponCalculatedCount);
+				Real rec_amt = this->legAmt(recLeg, scenPath, rec_discountFactor, evaluationDate, maturityDate, couponCalculatedCount);
 
 				floatLegNpv += float_amt;
 				structuredLegNpv += structured_amt;
